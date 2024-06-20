@@ -51,6 +51,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Objects;
 
 import kotlin.Lazy;
 import timber.log.Timber;
@@ -83,6 +84,7 @@ public class PlaybackController implements PlaybackControllerNotifiable {
     private Boolean spinnerOff = false;
 
     private VideoOptions mCurrentOptions;
+    private VideoOptions mPrevOptions;
     private int mDefaultSubIndex = -1;
     private int mDefaultAudioIndex = -1;
     private boolean burningSubs = false;
@@ -117,6 +119,7 @@ public class PlaybackController implements PlaybackControllerNotifiable {
     public PlaybackController(List<org.jellyfin.sdk.model.api.BaseItemDto> items, CustomPlaybackOverlayFragment fragment, int startIndex) {
         mItems = items;
         mCurrentIndex = 0;
+        mPrevOptions = new VideoOptions();
         if (items != null && startIndex > 0 && startIndex < items.size()) {
             mCurrentIndex = startIndex;
         }
@@ -665,7 +668,9 @@ public class PlaybackController implements PlaybackControllerNotifiable {
         // Use DefaultAudioStreamIndex for transcoding since they are encoded with only one stream
         //
         // Otherwise, query the players
-        if (mCurrentOptions.getAudioStreamIndex() != null) {
+        if (userPreferences.getValue().get(UserPreferences.Companion.getRememberAudio()) && mPrevOptions.getMediaSources() != null)
+            currIndex = bestGuessAudioTrackFromPrevious(getCurrentStreamInfo());
+        else if (mCurrentOptions.getAudioStreamIndex() != null) {
             currIndex = mCurrentOptions.getAudioStreamIndex();
         } else if (isTranscoding() && getCurrentMediaSource().getDefaultAudioStreamIndex() != null) {
             currIndex = getCurrentMediaSource().getDefaultAudioStreamIndex();
@@ -689,6 +694,49 @@ public class PlaybackController implements PlaybackControllerNotifiable {
             }
         }
         return null;
+    }
+
+    private Integer bestGuessAudioTrackFromPrevious(StreamInfo info) {
+        if (info == null)
+            return null;
+
+        Integer prevAudioIndex = mPrevOptions.getAudioStreamIndex();
+        List<MediaSourceInfo> prevMediaSources = mPrevOptions.getMediaSources();
+        if (prevAudioIndex != null && prevMediaSources != null) {
+            List<MediaStream> prevMediaStreams = prevMediaSources.get(0).getMediaStreams();
+            if (prevMediaStreams != null) {
+                MediaStream prevAudioStream = prevMediaStreams.get(prevAudioIndex);
+                if (prevAudioStream != null) {
+                    List<MediaStream> infoMediaStreams = info.getMediaSource().getMediaStreams();
+                    if (infoMediaStreams != null) {
+                        MediaStream infoAudioStream = infoMediaStreams.get(prevAudioIndex);
+                        if (infoAudioStream != null && Objects.equals(prevAudioStream.getDisplayTitle(), infoAudioStream.getDisplayTitle()))
+                            return prevAudioIndex;
+
+                        Integer indexOfPrevAudioStreamInInfo = findIndexByDisplayNameAndLang(infoMediaStreams, prevAudioStream.getDisplayTitle(), prevAudioStream.getLanguage());
+                        if (indexOfPrevAudioStreamInInfo != null)
+                            return indexOfPrevAudioStreamInInfo;
+                    }
+                }
+            }
+        }
+        return info.getMediaSource().getDefaultAudioStreamIndex();
+    }
+
+    // Method to find index of object in array by display name
+    private Integer findIndexByDisplayNameAndLang(List<MediaStream> mediaStreams, String displayTitle, String lang) {
+        int fallBackIndex = -1;
+        for (int i = 0; i < mediaStreams.size(); i++) {
+            String currentDisplayTitle = mediaStreams.get(i).getDisplayTitle();
+            String currentLang = mediaStreams.get(i).getLanguage();
+            if (currentDisplayTitle != null && currentLang != null && currentDisplayTitle.equals(displayTitle) && currentLang.equals(lang)) {
+                return i; // Return index if display name matches
+            } else if (currentLang != null && currentLang.equals(lang)) {
+                fallBackIndex = i; // Fallback will be track that matches language
+            }
+        }
+
+        return fallBackIndex; // Return index if only language matches
     }
 
     private void setDefaultAudioIndex(StreamInfo info) {
@@ -934,6 +982,9 @@ public class PlaybackController implements PlaybackControllerNotifiable {
         if (mCurrentIndex < mItems.size() - 1) {
             stop();
             resetPlayerErrors();
+            mPrevOptions.setSubtitleStreamIndex(mCurrentOptions.getSubtitleStreamIndex());
+            mPrevOptions.setAudioStreamIndex(mCurrentOptions.getAudioStreamIndex());
+            mPrevOptions.setMediaSources(mCurrentOptions.getMediaSources());
             mCurrentIndex++;
             videoQueueManager.getValue().setCurrentMediaPosition(mCurrentIndex);
             Timber.d("Moving to index: %d out of %d total items.", mCurrentIndex, mItems.size());
